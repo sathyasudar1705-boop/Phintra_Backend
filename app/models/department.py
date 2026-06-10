@@ -1,0 +1,21 @@
+import uuid
+from sqlalchemy import Column, String, DateTime, func, ForeignKey, Integer
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+from app.database import Base
+
+class Department(Base):
+    __tablename__ = "departments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, unique=True, nullable=False, index=True)
+    description = Column(String, nullable=True)
+    manager_id = Column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
+    risk_score = Column(Integer, default=0, nullable=False)
+    training_completion = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    employees = relationship("Employee", back_populates="department", cascade="all, delete-orphan", foreign_keys="[Employee.department_id]")
+    manager = relationship("Employee", foreign_keys=[manager_id], lazy="joined")
+    security_scores = relationship("SecurityScore", back_populates="department", cascade="all, delete-orphan")
