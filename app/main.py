@@ -8,7 +8,10 @@ from app.routes import (
 )
 
 # Create tables
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"[WARNING] Database table creation failed on startup (db server may be unreachable/offline): {e}")
 
 app = FastAPI(
     title="Phintra API",
@@ -25,6 +28,7 @@ origins = [
     "http://127.0.0.1:5174",
     "http://127.0.0.1:8501",
     "https://phintra.vercel.app",
+    "https://phintra-frontend.vercel.app",
     "https://phintra-backend.vercel.app",
 ]
 
@@ -35,6 +39,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Exception Handlers & Logging Middlewares
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import traceback
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"[DEBUG ERROR] Validation error on {request.method} {request.url.path}: {exc.errors()}")
+    body_data = b""
+    try:
+        body_data = await request.body()
+    except Exception:
+        pass
+    print(f"[DEBUG ERROR] Request body was: {body_data.decode('utf-8', errors='ignore')}")
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Invalid request payload or query parameters.", "errors": exc.errors()}
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    print(f"[DEBUG ERROR] HTTP exception on {request.method} {request.url.path}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    print(f"[DEBUG ERROR] Unhandled exception on {request.method} {request.url.path}: {str(exc)}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"}
+    )
+
+@app.middleware("http")
+async def debug_logging_middleware(request: Request, call_next):
+    # Log preflight/OPTIONS requests and authentication routes
+    is_options = request.method == "OPTIONS"
+    is_auth_route = "/auth/" in request.url.path
+    
+    if is_options or is_auth_route:
+        print("=" * 60)
+        print(f"[DEBUG REQUEST] {request.method} {request.url.path}")
+        print(f"[DEBUG REQUEST] Headers: {dict(request.headers)}")
+        print(f"[DEBUG REQUEST] Origin Header: {request.headers.get('origin')}")
+        print("=" * 60)
+        
+    response = await call_next(request)
+    
+    if is_options or is_auth_route:
+        print("=" * 60)
+        print(f"[DEBUG RESPONSE] Status Code: {response.status_code}")
+        print(f"[DEBUG RESPONSE] Headers: {dict(response.headers)}")
+        print("=" * 60)
+        
+    return response
 
 # Routers
 app.include_router(auth_router)
