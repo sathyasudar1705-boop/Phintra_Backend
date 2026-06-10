@@ -59,7 +59,8 @@ def create_department(dept_in: DepartmentCreate, db: Session = Depends(get_db), 
         description=dept_in.description,
         manager_id=dept_in.manager_id,
         risk_score=dept_in.risk_score if dept_in.risk_score is not None else 0,
-        training_completion=dept_in.training_completion if dept_in.training_completion is not None else 0
+        training_completion=dept_in.training_completion if dept_in.training_completion is not None else 0,
+        company_id=dept_in.company_id
     )
     db.add(db_dept)
     db.commit()
@@ -107,6 +108,9 @@ def update_department(id: UUID, dept_in: DepartmentUpdate, db: Session = Depends
         
     if dept_in.training_completion is not None:
         dept.training_completion = dept_in.training_completion
+
+    if hasattr(dept_in, "company_id") and dept_in.company_id is not None:
+        dept.company_id = dept_in.company_id
         
     db.commit()
     db.refresh(dept)

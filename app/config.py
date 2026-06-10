@@ -15,5 +15,6 @@ class Settings(BaseSettings):
     SMTP_USER: str = os.getenv("SMTP_USER", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
     SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "awareness@phintra.com")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://phintra-frontend.vercel.app")
 
 settings = Settings()

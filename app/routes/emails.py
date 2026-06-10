@@ -110,7 +110,7 @@ def send_campaign_emails(req: EmailCampaignSendRequest, db: Session = Depends(ge
                 db.refresh(recipient)
                 
             # 4. Generate unique tracking link
-            tracking_link = f"http://127.0.0.1:8001/campaigns/click/{recipient.track_id}"
+            tracking_link = f"{settings.FRONTEND_URL}/report/{recipient.track_id}"
             
             # 5. Personalize body
             personalized_body = template.body_html.replace("{{login_link}}", tracking_link)
@@ -254,7 +254,7 @@ def get_my_simulation_inbox(db: Session = Depends(get_db), current_user: User = 
                 email_body = template.body_html
                 
         # Reconstruct tracking link
-        tracking_link = f"http://127.0.0.1:8001/campaigns/click/{r.track_id}"
+        tracking_link = f"{settings.FRONTEND_URL}/report/{r.track_id}"
         
         inbox_items.append({
             "track_id": str(r.track_id),

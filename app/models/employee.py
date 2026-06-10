@@ -20,6 +20,7 @@ class Employee(Base):
     password_hash = Column(String, nullable=True)  # bcrypt hash for employee login
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     admin_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -27,6 +28,7 @@ class Employee(Base):
     from sqlalchemy import UniqueConstraint
     __table_args__ = (UniqueConstraint('admin_id', 'email', name='uix_admin_email'),)
 
+    company = relationship("Company", back_populates="employees")
     department = relationship("Department", back_populates="employees", foreign_keys=[department_id])
     campaign_recipients = relationship("CampaignRecipient", back_populates="employee", cascade="all, delete-orphan")
     training_assignments = relationship("TrainingAssignment", back_populates="employee", cascade="all, delete-orphan")

@@ -59,6 +59,8 @@ class EmailTemplate(Base):
     subject = Column(String, nullable=False)
     body_html = Column(String, nullable=False)
     category = Column(String, nullable=True, default="Phishing")
+    difficulty = Column(String, nullable=True, default="Medium")
+    sender_name = Column(String, nullable=True, default="System Notification")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -71,3 +73,17 @@ class AwarenessPage(Base):
     html_content = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class ReportLog(Base):
+    __tablename__ = "report_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    employee_id = Column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    action = Column(String, nullable=False) # report or safe
+    reported_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # relationships
+    employee = relationship("Employee", backref="report_logs")
+    campaign = relationship("Campaign", backref="report_logs")

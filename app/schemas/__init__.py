@@ -1,3 +1,4 @@
+from app.schemas.company_schema import CompanyBase, CompanyCreate, CompanyUpdate, CompanyResponse
 from app.schemas.user_schema import UserBase, UserCreate, UserUpdate, UserResponse, Token, TokenData
 from app.schemas.department_schema import DepartmentBase, DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentDetailResponse
 from app.schemas.employee_schema import EmployeeBase, EmployeeCreate, EmployeeUpdate, EmployeeResponse, EmployeeDetailResponse
@@ -26,6 +27,7 @@ from app.schemas.email_schema import ThreatFeedBase, ThreatFeedCreate, ThreatFee
 from app.schemas.notification_schema import NotificationBase, NotificationCreate, NotificationResponse, AuditLogResponse, SecurityScoreResponse
 
 __all__ = [
+    "CompanyBase", "CompanyCreate", "CompanyUpdate", "CompanyResponse",
     "UserBase", "UserCreate", "UserUpdate", "UserResponse", "Token", "TokenData",
     "DepartmentBase", "DepartmentCreate", "DepartmentUpdate", "DepartmentResponse", "DepartmentDetailResponse",
     "EmployeeBase", "EmployeeCreate", "EmployeeUpdate", "EmployeeResponse", "EmployeeDetailResponse",

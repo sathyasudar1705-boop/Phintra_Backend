@@ -9,6 +9,7 @@ class DepartmentBase(BaseModel):
     manager_id: Optional[UUID] = None
     risk_score: Optional[int] = 0
     training_completion: Optional[int] = 0
+    company_id: Optional[UUID] = None
 
 class DepartmentCreate(DepartmentBase):
     pass
@@ -19,6 +20,7 @@ class DepartmentUpdate(BaseModel):
     manager_id: Optional[UUID] = None
     risk_score: Optional[int] = None
     training_completion: Optional[int] = None
+    company_id: Optional[UUID] = None
 
 class DepartmentResponse(DepartmentBase):
     id: UUID

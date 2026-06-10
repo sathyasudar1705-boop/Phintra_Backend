@@ -4,7 +4,7 @@ from app.database import get_db
 from app.services.analytics_service import (
     get_dashboard_analytics, get_department_analytics,
     get_security_scores_trend, get_training_completion_stats,
-    get_ai_predictive_insights
+    get_ai_predictive_insights, get_insights_analytics
 )
 from app.utils.dependencies import require_manager
 from app.models.user import User
@@ -58,3 +58,8 @@ def get_training_module_stats(db: Session = Depends(get_db), current_user: User 
 def get_ai_insights(db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Retrieve heuristic gaps and AI-generated mitigation instructions (Managers & Admins)."""
     return get_ai_predictive_insights(db)
+
+@router.get("/insights")
+def get_insights_analytics_endpoint(db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
+    """Retrieve database-backed insights analytics (Managers & Admins)."""
+    return get_insights_analytics(db)

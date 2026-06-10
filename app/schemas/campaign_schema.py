@@ -9,6 +9,8 @@ class EmailTemplateBase(BaseModel):
     subject: str
     body_html: str
     category: Optional[str] = "Phishing"
+    difficulty: Optional[str] = "Medium"
+    sender_name: Optional[str] = "System Notification"
 
 class EmailTemplateCreate(EmailTemplateBase):
     pass
@@ -18,6 +20,8 @@ class EmailTemplateUpdate(BaseModel):
     subject: Optional[str] = None
     body_html: Optional[str] = None
     category: Optional[str] = None
+    difficulty: Optional[str] = None
+    sender_name: Optional[str] = None
 
 class EmailTemplateResponse(EmailTemplateBase):
     id: UUID

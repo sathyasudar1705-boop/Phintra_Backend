@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.campaign import Campaign, CampaignRecipient, EmailTemplate, AwarenessPage, CampaignClick
@@ -17,6 +17,7 @@ from app.utils.dependencies import require_manager
 from app.models.audit_log import AuditLog
 from uuid import UUID
 from typing import List
+from app.config import settings
 
 router = APIRouter(tags=["Campaigns"])
 
@@ -208,7 +209,7 @@ def send_campaign_test_email(id: UUID, req: dict, db: Session = Depends(get_db),
         body = template.body_html
         
     import uuid
-    tracking_link = f"http://127.0.0.1:8001/campaigns/click/{uuid.uuid4()}"
+    tracking_link = f"{settings.FRONTEND_URL}/report/{uuid.uuid4()}"
     personalized_body = body.replace("{{login_link}}", tracking_link)
     personalized_body = personalized_body.replace("{{employee_name}}", "Test Recipient")
     personalized_body = personalized_body.replace("{{company_name}}", "Phintra Test Lab")
@@ -256,7 +257,7 @@ def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user:
             r.track_id = uuid.uuid4()
             
         # Personalize tracking link
-        tracking_link = f"http://127.0.0.1:8001/campaigns/click/{r.track_id}"
+        tracking_link = f"{settings.FRONTEND_URL}/report/{r.track_id}"
         
         import json
         try:
@@ -570,8 +571,12 @@ def delete_awareness_page(id: UUID, db: Session = Depends(get_db), current_user:
 # CLICK TRACKING & ANALYTICS ENDPOINTS
 # =====================================================================
 
-@router.get("/campaigns/click/{track_id}", response_class=HTMLResponse)
+@router.get("/campaigns/click/{track_id}", response_class=RedirectResponse)
 def record_campaign_click_get(track_id: UUID, request: Request, db: Session = Depends(get_db)):
+    """Record click event via GET and redirect to the frontend awareness page."""
+    return RedirectResponse(url=f"{settings.FRONTEND_URL}/report/{track_id}")
+
+def record_campaign_click_get_old(track_id: UUID, request: Request, db: Session = Depends(get_db)):
     """Record click event via GET and serve a beautiful awareness landing page."""
     recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
     if not recipient:
@@ -1038,3 +1043,199 @@ def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), cur
         non_clicked_employees=non_clicked_employees,
         department_risk=department_risk
     )
+
+
+from pydantic import BaseModel
+class ReportSubmitRequest(BaseModel):
+    employee_id: UUID
+    campaign_id: UUID
+    action: str
+
+@router.get("/campaigns/track/{track_id}")
+def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depends(get_db)):
+    """Retrieve info about a campaign click tracking code and log the click action (Public)."""
+    recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Invalid tracking code")
+        
+    campaign = db.query(Campaign).filter(Campaign.id == recipient.campaign_id).first()
+    employee = db.query(Employee).filter(Employee.id == recipient.employee_id).first()
+    if not campaign or not employee:
+        raise HTTPException(status_code=404, detail="Associated records not found")
+        
+    # Log the Click event if not already done
+    if recipient.status not in ["Clicked", "Reported"]:
+        recipient.status = "Clicked"
+        
+        user_agent = request.headers.get("User-Agent", "Unknown")
+        ip_address = request.client.host if request.client else "127.0.0.1"
+        
+        already_clicked = db.query(CampaignClick).filter(
+            CampaignClick.campaign_id == campaign.id,
+            CampaignClick.employee_id == employee.id,
+            CampaignClick.track_id == track_id
+        ).first()
+        
+        if not already_clicked:
+            click = CampaignClick(
+                admin_id=employee.admin_id if employee.admin_id else campaign.created_by,
+                campaign_id=campaign.id,
+                employee_id=employee.id,
+                email=employee.email,
+                track_id=track_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                status="Clicked"
+            )
+            db.add(click)
+            
+            from app.models.email_log import EmailLog
+            db.query(EmailLog).filter(
+                EmailLog.campaign_id == campaign.id,
+                EmailLog.employee_id == employee.id
+            ).update({"status": "Clicked"}, synchronize_session=False)
+            
+            # Increase employee risk score
+            employee.risk_score = min(100.0, employee.risk_score + 20.0)
+            if employee.risk_score < 20.0:
+                employee.status = "Low Risk"
+            elif employee.risk_score < 50.0:
+                employee.status = "Medium Risk"
+            elif employee.risk_score < 80.0:
+                employee.status = "High Risk"
+            else:
+                employee.status = "Critical Risk"
+        db.commit()
+        
+    # Get template body
+    email_body = "This is a simulated phishing email."
+    email_subject = "Security Alert"
+    if campaign.template_id:
+        template = db.query(EmailTemplate).filter(EmailTemplate.id == campaign.template_id).first()
+        if template:
+            email_subject = template.subject
+            import json
+            try:
+                data = json.loads(template.body_html)
+                email_body = data.get("body", template.body_html)
+            except Exception:
+                email_body = template.body_html
+                
+    return {
+        "employee_id": str(recipient.employee_id),
+        "campaign_id": str(recipient.campaign_id),
+        "employee_name": f"{employee.first_name} {employee.last_name}",
+        "campaign_name": campaign.name,
+        "email_subject": email_subject,
+        "email_body": email_body,
+        "status": recipient.status
+    }
+
+@router.post("/report", status_code=status.HTTP_201_CREATED)
+def create_report_log(req: ReportSubmitRequest, db: Session = Depends(get_db)):
+    """Log an employee's action on a simulated email (Public)."""
+    if req.action not in ["report", "safe"]:
+        raise HTTPException(status_code=400, detail="Invalid action. Must be 'report' or 'safe'")
+        
+    recipient = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == req.campaign_id,
+        CampaignRecipient.employee_id == req.employee_id
+    ).first()
+    
+    if recipient:
+        if req.action == "report":
+            recipient.status = "Reported"
+        db.commit()
+        
+    from app.models.campaign import ReportLog
+    report_log = ReportLog(
+        employee_id=req.employee_id,
+        campaign_id=req.campaign_id,
+        action=req.action
+    )
+    db.add(report_log)
+    db.commit()
+    db.refresh(report_log)
+    
+    from app.models.certificate import ReportedEmail
+    from app.models.notification import Notification
+    
+    emp = db.query(Employee).filter(Employee.id == req.employee_id).first()
+    camp = db.query(Campaign).filter(Campaign.id == req.campaign_id).first()
+    
+    # Get template body/subject
+    email_subject = "Simulated Phishing Link Clicked"
+    email_body = "This was a simulated phishing email."
+    email_sender = "lure@phintra-sim.com"
+    if camp and camp.template_id:
+        template = db.query(EmailTemplate).filter(EmailTemplate.id == camp.template_id).first()
+        if template:
+            email_subject = template.subject
+            import json
+            try:
+                data = json.loads(template.body_html)
+                email_body = data.get("body", template.body_html)
+            except Exception:
+                email_body = template.body_html
+                
+    # Check if already in ReportedEmail
+    already_reported = db.query(ReportedEmail).filter(
+        ReportedEmail.employee_id == req.employee_id,
+        ReportedEmail.campaign_id == req.campaign_id
+    ).first()
+    
+    if not already_reported:
+        db_report = ReportedEmail(
+            employee_id=req.employee_id,
+            employee_name=f"{emp.first_name} {emp.last_name}" if emp else "Unknown Employee",
+            employee_email=emp.email if emp else "unknown@company.com",
+            campaign_id=req.campaign_id,
+            campaign_name=camp.name if camp else "Simulated Campaign",
+            email_subject=email_subject,
+            email_sender=email_sender,
+            email_body=email_body,
+            report_reason="Employee flagged the simulation email." if req.action == "report" else "Employee marked the email as safe.",
+            report_status="Suspicious" if req.action == "report" else "Safe",
+            department_id=emp.department_id if emp else None,
+            risk_score=50 if req.action == "report" else 10,
+            risk_level="Medium" if req.action == "report" else "Low"
+        )
+        db.add(db_report)
+        db.commit()
+        
+        # Send Notification to Admin
+        title = "Simulated phishing email reported" if req.action == "report" else "Email marked safe"
+        msg = f"{emp.first_name} {emp.last_name} successfully reported a simulated phishing email." if req.action == "report" else f"{emp.first_name} {emp.last_name} marked a simulated email as safe."
+        
+        notif = Notification(
+            user_id=None,
+            employee_id=req.employee_id,
+            title=title,
+            message=msg,
+            is_read=False
+        )
+        db.add(notif)
+        db.commit()
+        
+        if req.action == "report" and emp:
+            emp.risk_score = max(0.0, emp.risk_score - 10.0)
+            if emp.risk_score < 20.0:
+                emp.status = "Low Risk"
+            elif emp.risk_score < 50.0:
+                emp.status = "Medium Risk"
+            elif emp.risk_score < 80.0:
+                emp.status = "High Risk"
+            else:
+                emp.status = "Critical Risk"
+                
+            from app.models.certificate import Reward
+            reward = Reward(
+                employee_id=emp.id,
+                xp_amount=100,
+                description=f"Successfully reported phishing simulation: {camp.name if camp else 'Simulation'}"
+            )
+            db.add(reward)
+            db.commit()
+            
+    return {"status": "success", "message": f"Action '{req.action}' recorded successfully."}
+

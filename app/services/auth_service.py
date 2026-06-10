@@ -55,25 +55,47 @@ def register_user(db: Session, user_in: UserCreate) -> User:
             detail=f"Database error creating user account: {str(db_err)}"
         )
     
-    # 4. Create employee and department records if names are provided
+    # 4. Create company, department, and employee records if names are provided
     full_name = getattr(user_in, "full_name", None)
     company_name = getattr(user_in, "company_name", None)
     if full_name or company_name:
+        from app.models.company import Company
         from app.models.department import Department
         
-        dept_name = company_name if company_name else "Security Operations"
-        # Find or create department
-        dept = db.query(Department).filter(Department.name == dept_name).first()
+        # Create or find company
+        comp_name = company_name if company_name else "Phintra Enterprise"
+        company = db.query(Company).filter(Company.company_name == comp_name).first()
+        if not company:
+            try:
+                company = Company(
+                    company_name=comp_name,
+                    company_email=user_in.email,
+                    company_address="Default Corporate HQ"
+                )
+                db.add(company)
+                db.commit()
+                db.refresh(company)
+                logger.info(f"[DEBUG] Created default company '{comp_name}' for new user")
+            except Exception as comp_err:
+                db.rollback()
+                logger.error(f"[DEBUG] Failed to create custom company: {str(comp_err)}")
+                # Fallback to get first company or seed new one
+                company = db.query(Company).first()
+                
+        # Create default department operations for this company
+        dept_name = "Security Operations"
+        dept = db.query(Department).filter(Department.name == dept_name, Department.company_id == company.id).first() if company else None
         if not dept:
             try:
                 dept = Department(
                     name=dept_name,
-                    description=f"Default department for {company_name or 'new workspace'}"
+                    description=f"Default operations department for {comp_name}",
+                    company_id=company.id if company else None
                 )
                 db.add(dept)
                 db.commit()
                 db.refresh(dept)
-                logger.info(f"[DEBUG] Created default department '{dept_name}' for new workspace")
+                logger.info(f"[DEBUG] Created default department '{dept_name}' for company '{comp_name}'")
             except Exception as dept_err:
                 db.rollback()
                 logger.error(f"[DEBUG] Failed to create custom department: {str(dept_err)}")
@@ -101,6 +123,7 @@ def register_user(db: Session, user_in: UserCreate) -> User:
                     last_name=last_name,
                     email=user_in.email,
                     department_id=dept.id,
+                    company_id=company.id if company else None,
                     risk_score=0.0,
                     status="Low Risk",
                     admin_id=db_user.id,
