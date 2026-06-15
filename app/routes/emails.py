@@ -546,72 +546,14 @@ def report_email_from_gmail(req: GmailReportEmailCreate, request: Request, db: S
         # PHASE 3 - CAMPAIGN AUTO MAPPING
         campaign_id = None
         campaign_name = "External Gmail Report"
-        
-        if employee_email and email_subject:
-            from app.models.email_log import EmailLog
-            from app.models.campaign import Campaign
             
-            # Search email_logs table
-            email_log = db.query(EmailLog).filter(
-                EmailLog.recipient_email == employee_email.strip(),
-                EmailLog.subject == email_subject.strip()
-            ).order_by(EmailLog.sent_at.desc()).first()
-            
-            if email_log:
-                campaign_id = email_log.campaign_id
-                campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-                if campaign:
-                    campaign_name = campaign.name
-                    
-                # Update CampaignRecipient status and EmailLog status to "Reported"
-                from app.models.campaign import CampaignRecipient
-                recipient = db.query(CampaignRecipient).filter(
-                    CampaignRecipient.campaign_id == campaign_id,
-                    CampaignRecipient.employee_id == employee_id
-                ).first()
-                if recipient:
-                    recipient.status = "Reported"
-                email_log.status = "Reported"
-                
-                # Award XP reward (+150 XP) and adjust employee risk rating downwards
-                if employee_id:
-                    from app.models.certificate import Reward
-                    reward_desc = f"Successfully Spotted Simulated Phishing: {email_subject}"
-                    existing_reward = db.query(Reward).filter(
-                        Reward.employee_id == employee_id,
-                        Reward.description == reward_desc
-                    ).first()
-                    if not existing_reward:
-                        reward = Reward(
-                            employee_id=employee_id,
-                            xp_amount=150,
-                            description=reward_desc
-                        )
-                        db.add(reward)
-                        
-                    # Reduce risk rating on employee
-                    if emp:
-                        emp.risk_score = max(0.0, emp.risk_score - 15.0)
-                        if emp.risk_score < 20.0:
-                            emp.status = "Low Risk"
-                        elif emp.risk_score < 50.0:
-                            emp.status = "Medium Risk"
-                        elif emp.risk_score < 80.0:
-                            emp.status = "High Risk"
-                        else:
-                            emp.status = "Critical"
-                            
-                        from app.models.audit_log import SecurityScore
-                        score_entry = SecurityScore(employee_id=employee_id, score=(100.0 - emp.risk_score))
-                        db.add(score_entry)
-                    
         # 3. Create ReportedEmail record
         db_report = ReportedEmail(
             employee_id=employee_id,
             employee_name=employee_name,
             employee_email=employee_email,
-            campaign_id=campaign_id,
-            campaign_name=campaign_name,
+            campaign_id=None,
+            campaign_name="External Gmail Report",
             reported_by=req.reported_by,
             department_id=department_id,
             report_source="gmail_addon",
