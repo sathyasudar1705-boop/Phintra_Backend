@@ -67,3 +67,58 @@ class RoleChecker:
 require_admin = RoleChecker(["Admin"])
 require_manager = RoleChecker(["Admin", "Manager"])
 require_employee = RoleChecker(["Admin", "Manager", "Employee"])
+
+# New dependency for admin-only routes
+def get_current_admin(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    """Retrieve the currently authenticated admin user.
+    Raises 403 if the user is not an admin.
+    """
+    user = get_current_user(token=token, db=db)
+    if user.role != "Admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return user
+
+def get_user_admin_id(db: Session, user: User) -> str:
+    """Retrieve the admin ID that owns/scopes this user's workspace."""
+    if user.role in ["Admin", "admin", "Security Administrator"]:
+        return user.id
+    
+    # If the user is a MockUser or has an admin_id attribute
+    if hasattr(user, "admin_id") and user.admin_id:
+        return user.admin_id
+        
+    # Check Employee table lookup by email
+    from app.models.employee import Employee
+    emp = db.query(Employee).filter(Employee.email == user.email).first()
+    if emp and emp.admin_id:
+        return emp.admin_id
+        
+    return getattr(user, "admin_id", user.id)
+
+def get_user_company_id(db: Session, user: User) -> str:
+    """Retrieve the company ID that scopes this user's workspace."""
+    from app.models.company import Company
+    
+    # If Admin, check company owned by this admin
+    if user.role in ["Admin", "admin", "Security Administrator"]:
+        comp = db.query(Company).filter(Company.admin_id == user.id).first()
+        if comp:
+            return comp.id
+            
+    # Check Employee table lookup by email
+    from app.models.employee import Employee
+    emp = db.query(Employee).filter(Employee.email == user.email).first()
+    if emp and emp.company_id:
+        return emp.company_id
+        
+    # Fallback to fetching company by resolved admin ID
+    admin_id = get_user_admin_id(db, user)
+    if admin_id:
+        comp = db.query(Company).filter(Company.admin_id == admin_id).first()
+        if comp:
+            return comp.id
+            
+    return None

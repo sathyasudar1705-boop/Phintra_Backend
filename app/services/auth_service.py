@@ -70,7 +70,8 @@ def register_user(db: Session, user_in: UserCreate) -> User:
                 company = Company(
                     company_name=comp_name,
                     company_email=user_in.email,
-                    company_address="Default Corporate HQ"
+                    company_address="Default Corporate HQ",
+                    admin_id=db_user.id
                 )
                 db.add(company)
                 db.commit()

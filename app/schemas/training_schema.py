@@ -7,20 +7,34 @@ from uuid import UUID
 class TrainingModuleBase(BaseModel):
     title: str
     description: Optional[str] = None
-    duration_minutes: int = 10
-    xp_reward: int = 100
+    category: Optional[str] = None
+    duration: int = 10  # in minutes
+    difficulty: Optional[str] = None
+    video_url: Optional[str] = None
+    uploaded_video_url: Optional[str] = None
+    xp_reward: Optional[int] = 50
 
-class TrainingModuleCreate(TrainingModuleBase):
-    pass
+class TrainingModuleCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    duration: int = 10
+    difficulty: Optional[str] = None
+    video_url: Optional[str] = None
+    xp_reward: Optional[int] = 50
 
 class TrainingModuleUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    duration_minutes: Optional[int] = None
+    category: Optional[str] = None
+    duration: Optional[int] = None
+    difficulty: Optional[str] = None
+    video_url: Optional[str] = None
     xp_reward: Optional[int] = None
 
 class TrainingModuleResponse(TrainingModuleBase):
     id: UUID
+    admin_id: UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -30,27 +44,46 @@ class TrainingModuleResponse(TrainingModuleBase):
 
 # Training Assignment Schemas
 class TrainingAssignmentBase(BaseModel):
-    employee_id: UUID
-    module_id: UUID
-    progress: int = 0
-    completed: bool = False
-    completed_at: Optional[datetime] = None
+    employee_id: Optional[UUID] = None
+    training_module_id: Optional[UUID] = None
+    admin_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
+    assign_all: Optional[bool] = False
 
 class TrainingAssignmentCreate(TrainingAssignmentBase):
     pass
 
 class TrainingAssignmentUpdate(BaseModel):
-    progress: Optional[int] = None
-    completed: Optional[bool] = None
-    completed_at: Optional[datetime] = None
+    employee_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
 
-class TrainingAssignmentResponse(TrainingAssignmentBase):
+class TrainingAssignmentResponse(BaseModel):
     id: UUID
+    training_module_id: UUID
+    admin_id: UUID
+    employee_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
+    company_id: Optional[UUID] = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
+# Kept for compatibility with other modules
 class TrainingAssignBulkRequest(BaseModel):
     employee_ids: List[UUID]
+
+
+# Training Completion Schemas
+class TrainingCompletionResponse(BaseModel):
+    id: UUID
+    training_module_id: UUID
+    employee_id: UUID
+    status: str
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

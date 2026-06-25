@@ -3,6 +3,9 @@ from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
 load_dotenv()
+# Load .env from parent directories if not in current working directory
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/phintra")
@@ -16,5 +19,6 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
     SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "awareness@phintra.com")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://phintra-frontend.vercel.app")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")  # Add your Gemini API key
 
 settings = Settings()

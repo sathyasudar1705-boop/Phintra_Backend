@@ -44,3 +44,7 @@ class EmployeeDetailResponse(EmployeeResponse):
     department_name: Optional[str] = None
     is_active: bool = True
     has_password: bool = False
+    total_points: Optional[int] = 0
+    click_count: Optional[int] = 0
+    report_count: Optional[int] = 0
+    training_progress: Optional[str] = "0.0%"

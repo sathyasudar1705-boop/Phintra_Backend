@@ -4,7 +4,7 @@ from app.database import get_db
 from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.notification_schema import NotificationCreate, NotificationResponse
-from app.utils.dependencies import get_current_user, require_manager, require_employee
+from app.dependencies import get_current_user, require_manager, require_employee
 from uuid import UUID
 from typing import List
 

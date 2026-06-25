@@ -8,6 +8,7 @@ class Quiz(Base):
     __tablename__ = "quizzes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    admin_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     module_id = Column(UUID(as_uuid=True), ForeignKey("training_modules.id", ondelete="CASCADE"), nullable=False)
     passing_score = Column(Integer, default=100, nullable=False) # e.g. 100% correct required
     created_at = Column(DateTime(timezone=True), server_default=func.now())

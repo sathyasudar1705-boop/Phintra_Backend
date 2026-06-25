@@ -1,7 +1,8 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
+from app.schemas.message_schema import MessageRead
 
 # Certificate Schemas
 class CertificateBase(BaseModel):
@@ -98,12 +99,18 @@ class ReportedEmailStatusUpdate(BaseModel):
 class ReportedEmailReview(BaseModel):
     report_status: str # Pending, Safe, Suspicious, Closed
 
+class GmailAdminMessageCreate(BaseModel):
+    employee_email: EmailStr
+    report_id: UUID
+    message: str
+
 class ReportedEmailResponse(ReportedEmailBase):
     id: UUID
     analysis_results: Optional[Dict[str, Any]] = None
     reported_at: datetime
     created_at: datetime
     updated_at: Optional[datetime] = None
+    messages: Optional[List[MessageRead]] = []
 
     class Config:
         from_attributes = True

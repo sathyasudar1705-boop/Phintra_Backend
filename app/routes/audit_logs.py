@@ -4,7 +4,7 @@ from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.notification_schema import AuditLogResponse, AuditLogCreate
-from app.utils.dependencies import require_admin, require_employee
+from app.dependencies import require_admin, require_employee
 from typing import List
 
 router = APIRouter(prefix="/audit-logs", tags=["Audit Logs"])

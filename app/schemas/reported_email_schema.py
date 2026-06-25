@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any, Dict, List
 from uuid import UUID
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 
 class ReportedEmailBase(BaseModel):
     employee_id: UUID
@@ -27,9 +26,28 @@ class ReportedEmailRead(ReportedEmailBase):
     reviewed_by: Optional[UUID] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ReportedEmailUpdate(BaseModel):
     report_status: str
     reviewed_at: Optional[datetime] = None
     reviewed_by: Optional[UUID] = None
+
+class GmailReportEmailCreate(BaseModel):
+    subject: str
+    sender: str
+    body: Optional[str] = None
+    reported_user_email: Optional[str] = None
+    reported_time: Optional[str] = None
+    employee_email: Optional[str] = None
+    message_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    reported_at: Optional[str] = None
+    email_date: Optional[datetime] = None
+    email_body: Optional[str] = None
+    reported_by: Optional[UUID] = None
+
+class GmailAdminMessageCreate(BaseModel):
+    employee_email: EmailStr
+    report_id: UUID
+    message: str

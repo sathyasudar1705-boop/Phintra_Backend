@@ -5,7 +5,7 @@ from app.models.department import Department
 from app.models.employee import Employee
 from app.models.audit_log import SecurityScore
 from app.schemas.department_schema import DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentDetailResponse
-from app.utils.dependencies import require_manager
+from app.dependencies import require_manager, get_user_admin_id, get_user_company_id
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from uuid import UUID
@@ -16,12 +16,20 @@ router = APIRouter(prefix="/departments", tags=["Departments"])
 @router.get("", response_model=List[DepartmentDetailResponse])
 def list_departments(db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """List all departments with headcount and average risk rating (Managers & Admins)."""
-    departments = db.query(Department).all()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+
+    departments = db.query(Department).filter(
+        (Department.company_id == company_id) | (Department.admin_id == admin_id)
+    ).all()
     results = []
     
     for dept in departments:
         # Calculate headcount
-        employees = db.query(Employee).filter(Employee.department_id == dept.id).all()
+        employees = db.query(Employee).filter(
+            Employee.department_id == dept.id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).all()
         headcount = len(employees)
         
         # Calculate average risk score
@@ -39,7 +47,13 @@ def list_departments(db: Session = Depends(get_db), current_user: User = Depends
 @router.get("/{id}", response_model=DepartmentResponse)
 def get_department(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Get single department details by UUID (Managers & Admins)."""
-    dept = db.query(Department).filter(Department.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+
+    dept = db.query(Department).filter(
+        Department.id == id,
+        (Department.company_id == company_id) | (Department.admin_id == admin_id)
+    ).first()
     if not dept:
         raise HTTPException(status_code=404, detail="Department not found")
     return dept
@@ -47,10 +61,16 @@ def get_department(id: UUID, db: Session = Depends(get_db), current_user: User =
 @router.post("", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
 def create_department(dept_in: DepartmentCreate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Add a new department (Managers & Admins)."""
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+
     if not dept_in.name or not dept_in.name.strip():
         raise HTTPException(status_code=400, detail="Department name is required")
         
-    existing_dept = db.query(Department).filter(Department.name == dept_in.name.strip()).first()
+    existing_dept = db.query(Department).filter(
+        Department.name == dept_in.name.strip(),
+        (Department.company_id == company_id) | (Department.admin_id == admin_id)
+    ).first()
     if existing_dept:
         raise HTTPException(status_code=400, detail="Department name already exists")
         
@@ -60,7 +80,8 @@ def create_department(dept_in: DepartmentCreate, db: Session = Depends(get_db), 
         manager_id=dept_in.manager_id,
         risk_score=dept_in.risk_score if dept_in.risk_score is not None else 0,
         training_completion=dept_in.training_completion if dept_in.training_completion is not None else 0,
-        company_id=dept_in.company_id
+        company_id=company_id,
+        admin_id=admin_id
     )
     db.add(db_dept)
     db.commit()
@@ -81,7 +102,13 @@ def create_department(dept_in: DepartmentCreate, db: Session = Depends(get_db), 
 @router.put("/{id}", response_model=DepartmentResponse)
 def update_department(id: UUID, dept_in: DepartmentUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Modify department details (Managers & Admins)."""
-    dept = db.query(Department).filter(Department.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+
+    dept = db.query(Department).filter(
+        Department.id == id,
+        (Department.company_id == company_id) | (Department.admin_id == admin_id)
+    ).first()
     if not dept:
         raise HTTPException(status_code=404, detail="Department not found")
         
@@ -89,7 +116,11 @@ def update_department(id: UUID, dept_in: DepartmentUpdate, db: Session = Depends
         name_val = dept_in.name.strip()
         if not name_val:
             raise HTTPException(status_code=400, detail="Department name cannot be empty")
-        existing_dept = db.query(Department).filter(Department.name == name_val, Department.id != id).first()
+        existing_dept = db.query(Department).filter(
+            Department.name == name_val,
+            Department.id != id,
+            (Department.company_id == company_id) | (Department.admin_id == admin_id)
+        ).first()
         if existing_dept:
             raise HTTPException(status_code=400, detail="Department name already exists")
         dept.name = name_val
@@ -125,7 +156,13 @@ def update_department(id: UUID, dept_in: DepartmentUpdate, db: Session = Depends
 @router.delete("/{id}", status_code=status.HTTP_200_OK)
 def delete_department(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Delete a department (Managers & Admins)."""
-    dept = db.query(Department).filter(Department.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+
+    dept = db.query(Department).filter(
+        Department.id == id,
+        (Department.company_id == company_id) | (Department.admin_id == admin_id)
+    ).first()
     if not dept:
         raise HTTPException(status_code=404, detail="Department not found")
     dept_name = dept.name

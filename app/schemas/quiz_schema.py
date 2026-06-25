@@ -32,6 +32,7 @@ class QuizCreate(QuizBase):
 
 class QuizResponse(QuizBase):
     id: UUID
+    admin_id: Optional[UUID] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     questions: List[QuizQuestionResponse] = []

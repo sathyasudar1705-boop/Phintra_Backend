@@ -6,7 +6,7 @@ from app.models.employee import Employee
 from app.models.training import TrainingModule
 from app.models.user import User
 from app.schemas.certificate_schema import CertificateCreate, CertificateResponse
-from app.utils.dependencies import require_manager, require_employee
+from app.dependencies import require_manager, require_employee
 from uuid import UUID
 import secrets
 from typing import List

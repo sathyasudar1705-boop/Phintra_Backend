@@ -10,7 +10,7 @@ from app.schemas.quiz_schema import (
     QuizCreate, QuizResponse, QuizQuestionCreate, QuizQuestionResponse,
     QuizAttemptResponse, QuizAttemptSubmit
 )
-from app.utils.dependencies import require_manager, require_employee
+from app.dependencies import require_manager, require_employee, get_user_admin_id
 from uuid import UUID
 from datetime import datetime
 import secrets
@@ -21,17 +21,25 @@ router = APIRouter(tags=["Quizzes"])
 @router.get("/quizzes", response_model=List[QuizResponse])
 def list_quizzes(db: Session = Depends(get_db), current_user: User = Depends(require_employee)):
     """List all configured training module quizzes (Employees, Managers, Admins)."""
-    return db.query(Quiz).all()
+    admin_id = get_user_admin_id(db, current_user)
+    return db.query(Quiz).join(TrainingModule).filter(
+        (Quiz.admin_id == admin_id) | (TrainingModule.admin_id == admin_id)
+    ).all()
 
 @router.post("/quizzes", response_model=QuizResponse, status_code=status.HTTP_201_CREATED)
 def create_quiz(quiz_in: QuizCreate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Create a new quiz for a training module (Managers & Admins)."""
-    # Verify module exists
-    mod = db.query(TrainingModule).filter(TrainingModule.id == quiz_in.module_id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    
+    # Verify module exists and belongs to this workspace admin
+    mod = db.query(TrainingModule).filter(
+        TrainingModule.id == quiz_in.module_id,
+        TrainingModule.admin_id == admin_id
+    ).first()
     if not mod:
-        raise HTTPException(status_code=400, detail="Training module does not exist")
+        raise HTTPException(status_code=400, detail="Training module does not exist or access denied")
         
-    db_quiz = Quiz(module_id=quiz_in.module_id, passing_score=quiz_in.passing_score)
+    db_quiz = Quiz(module_id=quiz_in.module_id, passing_score=quiz_in.passing_score, admin_id=admin_id)
     db.add(db_quiz)
     db.commit()
     db.refresh(db_quiz)
@@ -40,9 +48,13 @@ def create_quiz(quiz_in: QuizCreate, db: Session = Depends(get_db), current_user
 @router.post("/quizzes/{id}/questions", response_model=QuizQuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_quiz_question(id: UUID, ques_in: QuizQuestionCreate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Add a question block to a quiz (Managers & Admins)."""
-    quiz = db.query(Quiz).filter(Quiz.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    quiz = db.query(Quiz).join(TrainingModule).filter(
+        Quiz.id == id,
+        (Quiz.admin_id == admin_id) | (TrainingModule.admin_id == admin_id)
+    ).first()
     if not quiz:
-        raise HTTPException(status_code=404, detail="Quiz not found")
+        raise HTTPException(status_code=404, detail="Quiz not found or access denied")
         
     db_ques = QuizQuestion(
         quiz_id=id,
@@ -58,9 +70,13 @@ def create_quiz_question(id: UUID, ques_in: QuizQuestionCreate, db: Session = De
 @router.post("/quizzes/{id}/attempt", response_model=QuizAttemptResponse)
 def submit_quiz_attempt(id: UUID, attempt_in: QuizAttemptSubmit, db: Session = Depends(get_db), current_user: User = Depends(require_employee)):
     """Record an employee's quiz answers, calculate score, and award certificates/XP if passed (Employees, Managers, Admins)."""
-    quiz = db.query(Quiz).filter(Quiz.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    quiz = db.query(Quiz).join(TrainingModule).filter(
+        Quiz.id == id,
+        (Quiz.admin_id == admin_id) | (TrainingModule.admin_id == admin_id)
+    ).first()
     if not quiz:
-        raise HTTPException(status_code=404, detail="Quiz not found")
+        raise HTTPException(status_code=404, detail="Quiz not found or access denied")
         
     emp = db.query(Employee).filter(Employee.id == attempt_in.employee_id).first()
     if not emp:
@@ -94,7 +110,26 @@ def submit_quiz_attempt(id: UUID, attempt_in: QuizAttemptSubmit, db: Session = D
         passed=passed
     )
     db.add(attempt)
-    
+
+    from app.utils.scoring import log_activity_event
+    from app.models.campaign import CampaignRecipient
+
+    # Update recipient quiz completion
+    recipient = db.query(CampaignRecipient).filter(
+        CampaignRecipient.employee_id == emp.id
+    ).order_by(CampaignRecipient.created_at.desc()).first()
+    if recipient:
+        recipient.quiz_completed_at = datetime.utcnow()
+        if passed:
+            recipient.status = "Completed Training"
+        else:
+            recipient.status = "Failed"
+
+    if passed:
+        log_activity_event(db, emp.id, "quiz_passed", event_value=str(quiz.id))
+    else:
+        log_activity_event(db, emp.id, "quiz_failed", event_value=str(quiz.id))
+
     # If passed, complete training module and award certificate
     if passed:
         assignment = db.query(TrainingAssignment).filter(

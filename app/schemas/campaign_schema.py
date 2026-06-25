@@ -5,26 +5,48 @@ from uuid import UUID
 
 # Email Template Schemas
 class EmailTemplateBase(BaseModel):
-    title: str
+    title: Optional[str] = None
+    template_name: Optional[str] = None
     subject: str
     body_html: str
+    body_text: Optional[str] = None
     category: Optional[str] = "Phishing"
     difficulty: Optional[str] = "Medium"
-    sender_name: Optional[str] = "System Notification"
+    sender_name: Optional[str] = None
+    sender_display_name: Optional[str] = None
+    sender_email: Optional[str] = None
 
 class EmailTemplateCreate(EmailTemplateBase):
     pass
 
 class EmailTemplateUpdate(BaseModel):
     title: Optional[str] = None
+    template_name: Optional[str] = None
     subject: Optional[str] = None
     body_html: Optional[str] = None
+    body_text: Optional[str] = None
     category: Optional[str] = None
     difficulty: Optional[str] = None
     sender_name: Optional[str] = None
+    sender_display_name: Optional[str] = None
+    sender_email: Optional[str] = None
 
-class EmailTemplateResponse(EmailTemplateBase):
+class EmailTemplateResponse(BaseModel):
     id: UUID
+    template_id: UUID
+    title: str
+    template_name: str
+    subject: str
+    body_html: str
+    body_text: Optional[str] = None
+    category: Optional[str] = "Phishing"
+    difficulty: Optional[str] = "Medium"
+    sender_name: Optional[str] = "System Notification"
+    sender_display_name: Optional[str] = "System Notification"
+    sender_email: Optional[str] = None
+    admin_id: Optional[UUID] = None
+    created_by_admin_id: Optional[UUID] = None
+    is_system_template: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -189,3 +211,7 @@ class CampaignAnalyticsResponse(BaseModel):
     reported_employees: List[ReportedEmployeeInfo]
     non_clicked_employees: List[NonClickedEmployeeInfo]
     department_risk: List[DepartmentRiskInfo]
+    total_opened: Optional[int] = 0
+    open_rate_percentage: Optional[float] = 0.0
+    training_completed_count: Optional[int] = 0
+    training_completion_rate_percentage: Optional[float] = 0.0

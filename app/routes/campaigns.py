@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -13,7 +13,7 @@ from app.schemas.campaign_schema import (
     ClickedEmployeeInfo, NonClickedEmployeeInfo, DepartmentRiskInfo, ReportedEmployeeInfo
 )
 from app.services.email_service import send_email
-from app.utils.dependencies import require_manager
+from app.dependencies import require_manager, get_current_user, get_user_admin_id, get_user_company_id
 from app.models.audit_log import AuditLog
 from uuid import UUID
 from typing import List
@@ -30,7 +30,9 @@ from app.models.department import Department
 @router.get("/campaigns", response_model=List[CampaignResponse])
 def list_campaigns(db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """List all simulation campaigns with stats aggregates (Managers & Admins)."""
-    campaigns = db.query(Campaign).filter(Campaign.created_by == current_user.id).all()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    campaigns = db.query(Campaign).filter((Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).all()
     results = []
     for c in campaigns:
         sent = db.query(CampaignRecipient).filter(CampaignRecipient.campaign_id == c.id).count()
@@ -67,7 +69,9 @@ def list_campaigns(db: Session = Depends(get_db), current_user: User = Depends(r
 @router.get("/campaigns/{id}", response_model=CampaignResponse)
 def get_campaign(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Get details of campaign by UUID with stats aggregates (Managers & Admins)."""
-    c = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    c = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -104,12 +108,24 @@ def get_campaign(id: UUID, db: Session = Depends(get_db), current_user: User = D
 @router.post("/campaigns", response_model=CampaignResponse, status_code=status.HTTP_201_CREATED)
 def create_campaign(camp_in: CampaignCreate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Create a new simulation campaign (Managers & Admins)."""
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    
     name_val = camp_in.title if camp_in.title else camp_in.name
     type_val = camp_in.campaign_type if camp_in.campaign_type else camp_in.type
     
     if not name_val:
         raise HTTPException(status_code=400, detail="Campaign name or title is required")
         
+    # Predefined / random sender profile assignment
+    sender_profile_id = getattr(camp_in, "sender_profile_id", None)
+    if not sender_profile_id:
+        from app.models.sender_profile import SenderProfile
+        import random
+        all_profiles = db.query(SenderProfile).all()
+        if all_profiles:
+            sender_profile_id = random.choice(all_profiles).profile_id
+
     db_camp = Campaign(
         name=name_val,
         type=type_val if type_val else "Link Phishing",
@@ -117,7 +133,9 @@ def create_campaign(camp_in: CampaignCreate, db: Session = Depends(get_db), curr
         launch_date=camp_in.launch_date,
         department_id=camp_in.department_id,
         template_id=camp_in.template_id,
-        created_by=current_user.id
+        created_by=current_user.id,
+        admin_id=admin_id,
+        sender_profile_id=sender_profile_id
     )
     db.add(db_camp)
     db.commit()
@@ -126,7 +144,10 @@ def create_campaign(camp_in: CampaignCreate, db: Session = Depends(get_db), curr
     # Assign employees if provided
     if camp_in.employee_ids:
         for emp_id in camp_in.employee_ids:
-            emp = db.query(Employee).filter(Employee.id == emp_id, Employee.admin_id == current_user.id).first()
+            emp = db.query(Employee).filter(
+                Employee.id == emp_id,
+                (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+            ).first()
             if not emp:
                 continue
             recipient = CampaignRecipient(campaign_id=db_camp.id, employee_id=emp_id)
@@ -143,7 +164,9 @@ def create_campaign(camp_in: CampaignCreate, db: Session = Depends(get_db), curr
 @router.put("/campaigns/{id}", response_model=CampaignResponse)
 def update_campaign(id: UUID, camp_in: CampaignUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Modify details of simulation campaign (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -178,10 +201,25 @@ def update_campaign(id: UUID, camp_in: CampaignUpdate, db: Session = Depends(get
     db.commit()
     return camp
 
+def personalize_content(text: str, employee_name: str, company_name: str, tracking_link: str) -> str:
+    if not text:
+        return text
+    # Replace new tokens
+    text = text.replace("{{EmployeeName}}", employee_name)
+    text = text.replace("{{Company}}", company_name)
+    text = text.replace("{{TrackingLink}}", tracking_link)
+    # Replace legacy tokens
+    text = text.replace("{{employee_name}}", employee_name)
+    text = text.replace("{{company_name}}", company_name)
+    text = text.replace("{{login_link}}", tracking_link)
+    return text
+
 @router.post("/campaigns/{id}/send-test")
 def send_campaign_test_email(id: UUID, req: dict, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Send a single test email of the campaign to the admin/manager email."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -191,7 +229,7 @@ def send_campaign_test_email(id: UUID, req: dict, db: Session = Depends(get_db),
         
     # Retrieve template
     if not camp.template_id:
-        template = db.query(EmailTemplate).first()
+        template = db.query(EmailTemplate).filter((EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).first()
     else:
         template = db.query(EmailTemplate).filter(EmailTemplate.id == camp.template_id).first()
         
@@ -199,32 +237,34 @@ def send_campaign_test_email(id: UUID, req: dict, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="No email template is configured for this campaign")
         
     # Reconstruct body & subject
+    subject = template.subject
+    body = template.body_html or template.body_text or ""
     import json
     try:
-        template_data = json.loads(template.body_html)
-        subject = template.subject
-        body = template_data.get("body", template.body_html)
+        template_data = json.loads(body)
+        body = template_data.get("body", body)
     except Exception:
-        subject = template.subject
-        body = template.body_html
+        pass
         
     import uuid
     tracking_link = f"{settings.FRONTEND_URL}/report/{uuid.uuid4()}"
-    personalized_body = body.replace("{{login_link}}", tracking_link)
-    personalized_body = personalized_body.replace("{{employee_name}}", "Test Recipient")
-    personalized_body = personalized_body.replace("{{company_name}}", "Phintra Test Lab")
+    personalized_subject = personalize_content(subject, "Test Recipient", "Phintra Test Lab", tracking_link)
+    personalized_body = personalize_content(body, "Test Recipient", "Phintra Test Lab", tracking_link)
     
-    success = send_email(db, test_email, f"[TEST] {subject}", personalized_body)
+    success = send_email(db, test_email, f"[TEST] {personalized_subject}", personalized_body)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to send test SMTP email. Check SMTP settings in .env.")
         
     return {"status": "success", "message": f"Test email sent to {test_email}"}
 
 @router.post("/campaigns/{id}/launch")
-def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
+def launch_campaign_route(id: UUID, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Launch/deploy the campaign: set active, send emails to all recipients (Managers & Admins)."""
     from datetime import datetime
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    from app.utils.scoring import log_activity_event
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -233,7 +273,7 @@ def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user:
     
     # Retrieve template
     if not camp.template_id:
-        template = db.query(EmailTemplate).first()
+        template = db.query(EmailTemplate).filter((EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).first()
     else:
         template = db.query(EmailTemplate).filter(EmailTemplate.id == camp.template_id).first()
         
@@ -246,11 +286,27 @@ def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user:
     sent_count = 0
     failed_count = 0
     
+    # Fetch sender profile if assigned
+    sender_profile = None
+    if camp.sender_profile_id:
+        from app.models.sender_profile import SenderProfile
+        sender_profile = db.query(SenderProfile).filter(SenderProfile.profile_id == camp.sender_profile_id).first()
+
     for r in recipients:
-        emp = db.query(Employee).filter(Employee.id == r.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == r.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if not emp:
             continue
             
+        # Populate tenant/isolation fields and timestamps
+        r.admin_id = emp.admin_id
+        r.company_id = emp.company_id
+        r.department_id = emp.department_id
+        r.sent_at = datetime.utcnow()
+        r.delivered_at = datetime.utcnow()
+
         # Ensure track_id is set
         if not r.track_id:
             import uuid
@@ -259,32 +315,58 @@ def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user:
         # Personalize tracking link
         tracking_link = f"{settings.FRONTEND_URL}/report/{r.track_id}"
         
+        subject = template.subject
+        body = template.body_html or template.body_text or ""
         import json
         try:
-            template_data = json.loads(template.body_html)
-            subject = template.subject
-            body = template_data.get("body", template.body_html)
+            template_data = json.loads(body)
+            body = template_data.get("body", body)
         except Exception:
-            subject = template.subject
-            body = template.body_html
+            pass
             
         # Personalize placeholders
-        personalized_body = body.replace("{{login_link}}", tracking_link)
-        personalized_body = personalized_body.replace("{{employee_name}}", f"{emp.first_name} {emp.last_name}")
-        personalized_body = personalized_body.replace("{{company_name}}", "Phintra Enterprise")
+        employee_name = f"{emp.first_name} {emp.last_name}" if (emp.first_name or emp.last_name) else (emp.name or "Valued Employee")
+        company_name = "Phintra Enterprise"
+        if emp.company and emp.company.company_name:
+            company_name = emp.company.company_name
+            
+        personalized_subject = personalize_content(subject, employee_name, company_name, tracking_link)
+        personalized_body = personalize_content(body, employee_name, company_name, tracking_link)
         
+        # Inject open tracking pixel dynamically using request base URL
+        open_pixel_url = f"{request.base_url}campaigns/open/{r.track_id}"
+        personalized_body += f'<img src="{open_pixel_url}" width="1" height="1" style="display:none;" />'
+
         success = send_email(
             db,
             emp.email,
-            subject,
+            personalized_subject,
             personalized_body,
             campaign_id=camp.id,
             template_id=template.id,
-            employee_id=emp.id
+            employee_id=emp.id,
+            admin_id=admin_id,
+            sender_profile=sender_profile
         )
         if success:
             r.status = "Sent"
             sent_count += 1
+            
+            # Log email_sent event
+            log_activity_event(db, emp.id, "email_sent", campaign_id=camp.id)
+
+            # Compliance audit log for each email send mapping
+            send_audit = AuditLog(
+                user_id=current_user.id,
+                action="Simulation Email Dispatched",
+                details=(
+                    f"Dispatched simulation to {emp.email} (Campaign: '{camp.name}' ID: {camp.id}). "
+                    f"Template ID: {template.id}, Title: '{template.title}', Subject: '{personalized_subject}'. "
+                    f"Tokens replaced: {{EmployeeName}} -> '{employee_name}', "
+                    f"{{Company}} -> '{company_name}', {{TrackingLink}} -> '{tracking_link}'."
+                )
+            )
+            db.add(send_audit)
         else:
             r.status = "Failed"
             failed_count += 1
@@ -298,10 +380,13 @@ def launch_campaign_route(id: UUID, db: Session = Depends(get_db), current_user:
     
     return {"message": f"Campaign launched successfully. {sent_count} emails sent, {failed_count} failed."}
 
+
 @router.delete("/campaigns/{id}", status_code=status.HTTP_200_OK)
 def delete_campaign(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Delete simulation campaign (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
     camp_name = camp.name
@@ -317,7 +402,9 @@ def delete_campaign(id: UUID, db: Session = Depends(get_db), current_user: User 
 @router.post("/campaigns/{id}/archive", response_model=CampaignResponse)
 def archive_campaign_route(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Archive simulation campaign (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
     camp.status = "Archived"
@@ -333,7 +420,9 @@ def archive_campaign_route(id: UUID, db: Session = Depends(get_db), current_user
 @router.post("/campaigns/{id}/remind")
 def send_campaign_reminder_route(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Dispatch reminder email via SMTP to campaign recipients (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -355,8 +444,17 @@ def send_campaign_reminder_route(id: UUID, db: Session = Depends(get_db), curren
         body += f"<hr>{body_content}"
         
     sent_count = 0
+    # Fetch sender profile if assigned
+    sender_profile = None
+    if camp.sender_profile_id:
+        from app.models.sender_profile import SenderProfile
+        sender_profile = db.query(SenderProfile).filter(SenderProfile.profile_id == camp.sender_profile_id).first()
+
     for r in recipients:
-        emp = db.query(Employee).filter(Employee.id == r.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == r.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if emp:
             success = send_email(db, emp.email, subject, body)
             if success:
@@ -371,15 +469,26 @@ def send_campaign_reminder_route(id: UUID, db: Session = Depends(get_db), curren
 @router.get("/campaigns/{id}/recipients")
 def list_campaign_recipients(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """List recipients of a simulation campaign (Managers & Admins)."""
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
     # Verify campaign belongs to admin
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
     recipients = db.query(CampaignRecipient).filter(CampaignRecipient.campaign_id == id).all()
     results = []
+    # Fetch sender profile if assigned
+    sender_profile = None
+    if camp.sender_profile_id:
+        from app.models.sender_profile import SenderProfile
+        sender_profile = db.query(SenderProfile).filter(SenderProfile.profile_id == camp.sender_profile_id).first()
+
     for r in recipients:
-        emp = db.query(Employee).filter(Employee.id == r.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == r.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if emp:
             results.append({
                 "employee_id": str(r.employee_id),
@@ -392,14 +501,19 @@ def list_campaign_recipients(id: UUID, db: Session = Depends(get_db), current_us
 @router.post("/campaigns/{id}/assign-employees", response_model=List[CampaignRecipientResponse])
 def assign_recipients(id: UUID, req: CampaignAssignRequest, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Bind employee targets to simulation campaign (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
     results = []
     for emp_id in req.employee_ids:
         # Verify employee exists and belongs to this admin
-        emp = db.query(Employee).filter(Employee.id == emp_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == emp_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if not emp:
             continue
         # Verify not already assigned
@@ -429,7 +543,9 @@ def assign_recipients(id: UUID, req: CampaignAssignRequest, db: Session = Depend
 @router.post("/campaigns/{id}/send-awareness-email")
 def trigger_awareness_emails(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Trigger SMTP dispatch of security awareness email to all campaign recipients (Managers & Admins)."""
-    camp = db.query(Campaign).filter(Campaign.id == id, Campaign.created_by == current_user.id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
+    camp = db.query(Campaign).filter(Campaign.id == id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -452,11 +568,14 @@ def trigger_awareness_emails(id: UUID, db: Session = Depends(get_db), current_us
     sent_count = 0
     failed_count = 0
     for recipient in recipients:
-        emp = db.query(Employee).filter(Employee.id == recipient.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == recipient.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if not emp:
             continue
             
-        success = send_email(db, emp.email, subject, body)
+        success = send_email(db, emp.email, subject, body, admin_id=admin_id)
         if success:
             recipient.status = "Sent"
             sent_count += 1
@@ -483,44 +602,196 @@ def trigger_awareness_emails(id: UUID, db: Session = Depends(get_db), current_us
 # EMAIL TEMPLATE ENDPOINTS
 # =====================================================================
 
+import re
+
+def validate_sender_domain(email_or_domain: str, db: Session, admin_id: UUID):
+    if not email_or_domain:
+        return
+    # Extract domain
+    domain = email_or_domain.split("@")[-1].lower() if "@" in email_or_domain else email_or_domain.lower()
+    
+    # List of blocked real major domains (impersonation targets)
+    blocked_domains = {
+        "google.com", "microsoft.com", "apple.com", "amazon.com", "netflix.com", 
+        "paypal.com", "facebook.com", "github.com", "linkedin.com", "zoom.us",
+        "chase.com", "bankofamerica.com", "wellsfargo.com", "citibank.com",
+        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com"
+    }
+    
+    if domain in blocked_domains:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Domain '{domain}' is a restricted public or company domain. Impersonation of major brand domains is blocked."
+        )
+        
+    # Get the admin's company email domain
+    from app.models.company import Company
+    company = db.query(Company).filter(Company.admin_id == admin_id).first()
+    if company and company.company_email:
+        comp_domain = company.company_email.split("@")[-1].lower()
+        if domain == comp_domain:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Domain '{domain}' is your company's official domain. Phishing simulations cannot send from unauthorized real corporate domains to prevent real spoofing/spam filters from blocking."
+            )
+
+def check_sensitive_content(text: str):
+    if not text:
+        return
+    # Check for input elements or forms that collect credentials
+    input_pattern = re.compile(r'<input\s+[^>]*type=["\']?password["\']?[^>]*>', re.IGNORECASE)
+    if input_pattern.search(text):
+        raise HTTPException(
+            status_code=400,
+            detail="Templates cannot contain password input fields to prevent sensitive credential collection."
+        )
+    
+    form_pattern = re.compile(r'<form\s+[^>]*>', re.IGNORECASE)
+    if form_pattern.search(text):
+        raise HTTPException(
+            status_code=400,
+            detail="Templates cannot contain form elements to prevent credential collection."
+        )
+
+    # Keyword blocklist (case insensitive) for sensitive PII or authentication details
+    forbidden_keywords = [
+        "otp", "one-time password", "one time password", "social security number", "ssn", 
+        "credit card number", "cvv", "bank account number", "pin number"
+    ]
+    
+    lower_text = text.lower()
+    for keyword in forbidden_keywords:
+        if keyword in lower_text:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Template contains restricted keyword/topic: '{keyword}'. Phintra simulations are prohibited from collecting passwords, OTPs, bank details, or sensitive PII."
+            )
+
 @router.get("/email-templates", response_model=List[EmailTemplateResponse])
 def list_email_templates(db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """List simulation email templates (Managers & Admins)."""
-    return db.query(EmailTemplate).all()
+    admin_id = get_user_admin_id(db, current_user)
+    return db.query(EmailTemplate).filter((EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).all()
 
 @router.post("/email-templates", response_model=EmailTemplateResponse, status_code=status.HTTP_201_CREATED)
 def create_email_template(temp_in: EmailTemplateCreate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Create simulation email template (Managers & Admins)."""
-    db_temp = EmailTemplate(**temp_in.dict())
+    admin_id = get_user_admin_id(db, current_user)
+    
+    title = temp_in.template_name or temp_in.title or "Untitled Template"
+    sender_name = temp_in.sender_display_name or temp_in.sender_name or "System Notification"
+    sender_email = temp_in.sender_email
+    body_html = temp_in.body_html
+    body_text = temp_in.body_text
+    subject = temp_in.subject
+    
+    # Run validations
+    validate_sender_domain(sender_email, db, admin_id)
+    check_sensitive_content(subject)
+    check_sensitive_content(body_html)
+    check_sensitive_content(body_text)
+    
+    db_temp = EmailTemplate(
+        admin_id=admin_id,
+        title=title,
+        subject=subject,
+        body_html=body_html,
+        body_text=body_text,
+        category=temp_in.category,
+        difficulty=temp_in.difficulty,
+        sender_name=sender_name,
+        sender_email=sender_email
+    )
     db.add(db_temp)
     db.commit()
     db.refresh(db_temp)
+    
+    # Audit log
+    audit = AuditLog(user_id=current_user.id, action="Template Created", details=f"Created template '{title}' (ID: {db_temp.id})")
+    db.add(audit)
+    db.commit()
+    
     return db_temp
 
 @router.put("/email-templates/{id}", response_model=EmailTemplateResponse)
 def update_email_template(id: UUID, temp_in: EmailTemplateUpdate, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Update simulation email template (Managers & Admins)."""
-    temp = db.query(EmailTemplate).filter(EmailTemplate.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    temp = db.query(EmailTemplate).filter(EmailTemplate.id == id, (EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).first()
     if not temp:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail="Template not found or unauthorized")
         
     update_data = temp_in.dict(exclude_unset=True)
+    
+    # Validate sender domain
+    if "sender_email" in update_data:
+        validate_sender_domain(update_data["sender_email"], db, admin_id)
+        
+    # Validate sensitive content
+    for field in ["subject", "body_html", "body_text"]:
+        if field in update_data:
+            check_sensitive_content(update_data[field])
+
+    # Resolve names
+    if "template_name" in update_data:
+        update_data["title"] = update_data.pop("template_name")
+    if "sender_display_name" in update_data:
+        update_data["sender_name"] = update_data.pop("sender_display_name")
+        
     for key, val in update_data.items():
         setattr(temp, key, val)
         
     db.commit()
     db.refresh(temp)
+    
+    # Audit log
+    audit = AuditLog(user_id=current_user.id, action="Template Updated", details=f"Updated template '{temp.title}' (ID: {temp.id})")
+    db.add(audit)
+    db.commit()
+    
     return temp
+
+@router.post("/email-templates/{id}/clone", response_model=EmailTemplateResponse, status_code=status.HTTP_201_CREATED)
+def clone_email_template(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
+    """Clone/duplicate an existing email template (Managers & Admins)."""
+    admin_id = get_user_admin_id(db, current_user)
+    temp = db.query(EmailTemplate).filter(EmailTemplate.id == id, (EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).first()
+    if not temp:
+        raise HTTPException(status_code=404, detail="Template not found")
+        
+    cloned_temp = EmailTemplate(
+        admin_id=admin_id,
+        title=f"Copy of {temp.title}",
+        subject=temp.subject,
+        body_html=temp.body_html,
+        body_text=temp.body_text,
+        category=temp.category,
+        difficulty=temp.difficulty,
+        sender_name=temp.sender_name,
+        sender_email=temp.sender_email
+    )
+    db.add(cloned_temp)
+    db.commit()
+    db.refresh(cloned_temp)
+    
+    # Audit log
+    audit = AuditLog(user_id=current_user.id, action="Template Cloned", details=f"Cloned template '{temp.title}' as '{cloned_temp.title}' (ID: {cloned_temp.id})")
+    db.add(audit)
+    db.commit()
+    
+    return cloned_temp
 
 @router.delete("/email-templates/{id}", status_code=status.HTTP_200_OK)
 def delete_email_template(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Delete simulation email template (Managers & Admins)."""
-    temp = db.query(EmailTemplate).filter(EmailTemplate.id == id).first()
+    admin_id = get_user_admin_id(db, current_user)
+    temp = db.query(EmailTemplate).filter(EmailTemplate.id == id, (EmailTemplate.admin_id == admin_id) | (EmailTemplate.admin_id == None)).first()
     if not temp:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise HTTPException(status_code=404, detail="Template not found or unauthorized")
     db.delete(temp)
     db.commit()
     return {"detail": "Email template successfully deleted"}
+
 
 
 # =====================================================================
@@ -571,9 +842,74 @@ def delete_awareness_page(id: UUID, db: Session = Depends(get_db), current_user:
 # CLICK TRACKING & ANALYTICS ENDPOINTS
 # =====================================================================
 
+@router.get("/campaigns/open/{track_id}", response_class=Response)
+def record_campaign_open(track_id: UUID, db: Session = Depends(get_db)):
+    """Record email open tracking pixel and update campaign recipient status."""
+    from fastapi import Response
+    from datetime import datetime
+    from app.utils.scoring import log_activity_event
+    
+    recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
+    if recipient:
+        if recipient.status in ["Sent", "Delivered"]:
+            recipient.opened_at = datetime.utcnow()
+            recipient.status = "Opened"
+            db.commit()
+            
+            # Log event
+            log_activity_event(db, recipient.employee_id, "email_opened", campaign_id=recipient.campaign_id)
+            
+    # Return a 1x1 transparent PNG image
+    transparent_png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82'
+    return Response(transparent_png, media_type="image/png")
+
+
 @router.get("/campaigns/click/{track_id}", response_class=RedirectResponse)
 def record_campaign_click_get(track_id: UUID, request: Request, db: Session = Depends(get_db)):
     """Record click event via GET and redirect to the frontend awareness page."""
+    from datetime import datetime
+    from app.utils.scoring import log_activity_event
+    recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
+    if recipient:
+        campaign = db.query(Campaign).filter(Campaign.id == recipient.campaign_id).first()
+        employee = db.query(Employee).filter(Employee.id == recipient.employee_id).first()
+        if campaign and employee:
+            already_clicked = db.query(CampaignClick).filter(
+                CampaignClick.campaign_id == campaign.id,
+                CampaignClick.employee_id == employee.id,
+                CampaignClick.track_id == track_id
+            ).first()
+            
+            user_agent = request.headers.get("User-Agent", "Unknown")
+            ip_address = request.client.host if request.client else "127.0.0.1"
+            
+            if not already_clicked:
+                click = CampaignClick(
+                    admin_id=employee.admin_id if employee.admin_id else campaign.created_by,
+                    campaign_id=campaign.id,
+                    employee_id=employee.id,
+                    email=employee.email,
+                    track_id=track_id,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    status="Clicked"
+                )
+                db.add(click)
+                
+                recipient.status = "Clicked"
+                recipient.clicked_at = datetime.utcnow()
+                
+                from app.models.email_log import EmailLog
+                db.query(EmailLog).filter(
+                    EmailLog.campaign_id == campaign.id,
+                    EmailLog.employee_id == employee.id
+                ).update({"status": "Clicked"}, synchronize_session=False)
+                
+                # Use log_activity_event for behavioral score updates
+                log_activity_event(db, employee.id, "link_clicked", campaign_id=campaign.id)
+                
+                db.commit()
+                
     return RedirectResponse(url=f"{settings.FRONTEND_URL}/report/{track_id}")
 
 def record_campaign_click_get_old(track_id: UUID, request: Request, db: Session = Depends(get_db)):
@@ -849,6 +1185,8 @@ def record_campaign_click_get_old(track_id: UUID, request: Request, db: Session 
 @router.post("/campaigns/click/{track_id}", status_code=status.HTTP_201_CREATED)
 def record_campaign_click(track_id: UUID, click_in: CampaignClickCreate, db: Session = Depends(get_db)):
     """Record click event for campaign recipient tracking (Public Endpoint)."""
+    from datetime import datetime
+    from app.utils.scoring import log_activity_event
     # 1. Fetch CampaignRecipient
     recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
     if not recipient:
@@ -880,8 +1218,9 @@ def record_campaign_click(track_id: UUID, click_in: CampaignClickCreate, db: Ses
         )
         db.add(click)
         
-        # 4. Update CampaignRecipient status
+        # 4. Update CampaignRecipient status and timestamp
         recipient.status = "Clicked"
+        recipient.clicked_at = datetime.utcnow()
         
         # 5. Update EmailLog status if exists
         from app.models.email_log import EmailLog
@@ -890,20 +1229,8 @@ def record_campaign_click(track_id: UUID, click_in: CampaignClickCreate, db: Ses
             EmailLog.employee_id == employee.id
         ).update({"status": "Clicked"}, synchronize_session=False)
         
-        # Adjust employee risk rating upwards on simulated failure
-        employee.risk_score = min(100.0, employee.risk_score + 20.0)
-        if employee.risk_score < 20.0:
-            employee.status = "Low Risk"
-        elif employee.risk_score < 50.0:
-            employee.status = "Medium Risk"
-        elif employee.risk_score < 80.0:
-            employee.status = "High Risk"
-        else:
-            employee.status = "Critical"
-            
-        from app.models.audit_log import SecurityScore
-        score_entry = SecurityScore(employee_id=employee.id, score=(100.0 - employee.risk_score))
-        db.add(score_entry)
+        # Use log_activity_event for behavioral score updates
+        log_activity_event(db, employee.id, "link_clicked", campaign_id=campaign.id)
         
         db.commit()
         
@@ -930,10 +1257,13 @@ def get_campaign_alerts(db: Session = Depends(get_db), current_user: User = Depe
 
 
 @router.get("/campaigns/analytics/{campaign_id}", response_model=CampaignAnalyticsResponse)
+@router.get("/campaigns/{campaign_id}/analytics", response_model=CampaignAnalyticsResponse)
 def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(require_manager)):
     """Retrieve campaign click rates and analytics (Managers & Admins)."""
+    admin_id = get_user_admin_id(db, current_user)
+    company_id = get_user_company_id(db, current_user)
     # 1. Verify campaign belongs to admin
-    camp = db.query(Campaign).filter(Campaign.id == campaign_id, Campaign.created_by == current_user.id).first()
+    camp = db.query(Campaign).filter(Campaign.id == campaign_id, (Campaign.admin_id == admin_id) | (Campaign.admin_id == None)).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
         
@@ -942,8 +1272,17 @@ def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), cur
     
     # 3. Filter employees to only those belonging to this admin
     valid_recipients = []
+    # Fetch sender profile if assigned
+    sender_profile = None
+    if camp.sender_profile_id:
+        from app.models.sender_profile import SenderProfile
+        sender_profile = db.query(SenderProfile).filter(SenderProfile.profile_id == camp.sender_profile_id).first()
+
     for r in recipients:
-        emp = db.query(Employee).filter(Employee.id == r.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == r.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if emp:
             valid_recipients.append((r, emp))
             
@@ -1010,12 +1349,15 @@ def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), cur
             total_employees=dept_totals[d_name]
         ))
         
-    from app.models.certificate import ReportedEmail
+    from app.models.reported_email import ReportedEmail
     reported_emails_q = db.query(ReportedEmail).filter(ReportedEmail.campaign_id == campaign_id).all()
     
     reported_employees = []
     for r in reported_emails_q:
-        emp = db.query(Employee).filter(Employee.id == r.employee_id, Employee.admin_id == current_user.id).first()
+        emp = db.query(Employee).filter(
+            Employee.id == r.employee_id,
+            (Employee.company_id == company_id) | (Employee.admin_id == admin_id)
+        ).first()
         if emp:
             dept = db.query(Department).filter(Department.id == r.department_id).first() if r.department_id else None
             dept_name = dept.name if dept else "Unknown"
@@ -1029,6 +1371,13 @@ def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), cur
     total_reported = len(reported_employees)
     click_rate = (total_clicked / total_sent * 100.0) if total_sent > 0 else 0.0
     reported_rate = (total_reported / total_sent * 100.0) if total_sent > 0 else 0.0
+
+    # Calculate opens and training completions
+    total_opened = sum(1 for r, emp in valid_recipients if r.opened_at is not None or r.status in ["Opened", "Clicked", "Reported"])
+    open_rate = (total_opened / total_sent * 100.0) if total_sent > 0 else 0.0
+    
+    training_completed_count = sum(1 for r, emp in valid_recipients if r.training_completed_at is not None or r.status == "Completed Training")
+    training_completion_rate = (training_completed_count / total_sent * 100.0) if total_sent > 0 else 0.0
     
     return CampaignAnalyticsResponse(
         total_sent=total_sent,
@@ -1041,7 +1390,11 @@ def get_campaign_analytics(campaign_id: UUID, db: Session = Depends(get_db), cur
         clicked_employees=clicked_employees,
         reported_employees=reported_employees,
         non_clicked_employees=non_clicked_employees,
-        department_risk=department_risk
+        department_risk=department_risk,
+        total_opened=total_opened,
+        open_rate_percentage=round(open_rate, 2),
+        training_completed_count=training_completed_count,
+        training_completion_rate_percentage=round(training_completion_rate, 2)
     )
 
 
@@ -1054,6 +1407,8 @@ class ReportSubmitRequest(BaseModel):
 @router.get("/campaigns/track/{track_id}")
 def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depends(get_db)):
     """Retrieve info about a campaign click tracking code and log the click action (Public)."""
+    from datetime import datetime
+    from app.utils.scoring import log_activity_event
     recipient = db.query(CampaignRecipient).filter(CampaignRecipient.track_id == track_id).first()
     if not recipient:
         raise HTTPException(status_code=404, detail="Invalid tracking code")
@@ -1066,6 +1421,7 @@ def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depe
     # Log the Click event if not already done
     if recipient.status not in ["Clicked", "Reported"]:
         recipient.status = "Clicked"
+        recipient.clicked_at = datetime.utcnow()
         
         user_agent = request.headers.get("User-Agent", "Unknown")
         ip_address = request.client.host if request.client else "127.0.0.1"
@@ -1095,21 +1451,16 @@ def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depe
                 EmailLog.employee_id == employee.id
             ).update({"status": "Clicked"}, synchronize_session=False)
             
-            # Increase employee risk score
-            employee.risk_score = min(100.0, employee.risk_score + 20.0)
-            if employee.risk_score < 20.0:
-                employee.status = "Low Risk"
-            elif employee.risk_score < 50.0:
-                employee.status = "Medium Risk"
-            elif employee.risk_score < 80.0:
-                employee.status = "High Risk"
-            else:
-                employee.status = "Critical Risk"
+            # Use log_activity_event for behavioral score updates
+            log_activity_event(db, employee.id, "link_clicked", campaign_id=campaign.id)
+            
         db.commit()
         
     # Get template body
     email_body = "This is a simulated phishing email."
     email_subject = "Security Alert"
+    awareness_page_data = None
+    
     if campaign.template_id:
         template = db.query(EmailTemplate).filter(EmailTemplate.id == campaign.template_id).first()
         if template:
@@ -1121,6 +1472,24 @@ def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depe
             except Exception:
                 email_body = template.body_html
                 
+        # Resolve custom linked awareness page config
+        pages = db.query(AwarenessPage).all()
+        for page in pages:
+            try:
+                import json
+                config = json.loads(page.html_content)
+                if config.get("email_template_id") == str(campaign.template_id):
+                    awareness_page_data = {
+                        "title": page.title,
+                        "message": config.get("message"),
+                        "tips": config.get("tips", []),
+                        "cta_text": config.get("ctaText"),
+                        "theme": config.get("theme")
+                    }
+                    break
+            except Exception:
+                pass
+                
     return {
         "employee_id": str(recipient.employee_id),
         "campaign_id": str(recipient.campaign_id),
@@ -1128,12 +1497,15 @@ def get_campaign_track_info(track_id: UUID, request: Request, db: Session = Depe
         "campaign_name": campaign.name,
         "email_subject": email_subject,
         "email_body": email_body,
-        "status": recipient.status
+        "status": recipient.status,
+        "awareness_page": awareness_page_data
     }
 
 @router.post("/report", status_code=status.HTTP_201_CREATED)
 def create_report_log(req: ReportSubmitRequest, db: Session = Depends(get_db)):
     """Log an employee's action on a simulated email (Public)."""
+    from datetime import datetime
+    from app.utils.scoring import log_activity_event
     if req.action not in ["report", "safe"]:
         raise HTTPException(status_code=400, detail="Invalid action. Must be 'report' or 'safe'")
         
@@ -1145,6 +1517,10 @@ def create_report_log(req: ReportSubmitRequest, db: Session = Depends(get_db)):
     if recipient:
         if req.action == "report":
             recipient.status = "Reported"
+            recipient.reported_at = datetime.utcnow()
+            
+            # Log event
+            log_activity_event(db, req.employee_id, "email_reported", campaign_id=req.campaign_id)
         db.commit()
         
     from app.models.campaign import ReportLog
@@ -1157,7 +1533,7 @@ def create_report_log(req: ReportSubmitRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(report_log)
     
-    from app.models.certificate import ReportedEmail
+    from app.models.reported_email import ReportedEmail
     from app.models.notification import Notification
     
     emp = db.query(Employee).filter(Employee.id == req.employee_id).first()
@@ -1238,4 +1614,161 @@ def create_report_log(req: ReportSubmitRequest, db: Session = Depends(get_db)):
             db.commit()
             
     return {"status": "success", "message": f"Action '{req.action}' recorded successfully."}
+
+
+@router.get("/campaigns/employee/campaign-feed")
+@router.get("/employee/campaign-feed")
+def get_employee_campaign_feed(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Retrieve all phishing simulation campaigns dispatched to the logged-in employee."""
+    emp = db.query(Employee).filter(Employee.id == current_user.id).first()
+    if not emp:
+        emp = db.query(Employee).filter(Employee.email == current_user.email).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee profile not found")
+            
+    # Fetch all recipient records for this employee
+    recipients = db.query(CampaignRecipient).filter(CampaignRecipient.employee_id == emp.id).all()
+    
+    feed = []
+    for cr in recipients:
+        camp = db.query(Campaign).filter(Campaign.id == cr.campaign_id).first()
+        if not camp:
+            continue
+            
+        template = db.query(EmailTemplate).filter(EmailTemplate.id == camp.template_id).first()
+        
+        # Determine subject, sender, and description
+        subject = template.subject if template else "Simulated Phishing Drill"
+        sender_name = template.sender_name if (template and template.sender_name) else "IT Security Alert"
+        description = template.title if template else "Corporate Phishing Simulation"
+        difficulty = template.difficulty if template else "Medium"
+        category = template.category if template else "Suspicious Link"
+        
+        feed.append({
+            "campaign_id": str(camp.id),
+            "campaign_name": camp.name,
+            "send_date": (cr.created_at or camp.launch_date or camp.created_at).isoformat(),
+            "type": camp.type,
+            "subject": subject,
+            "sender_name": sender_name,
+            "description": description,
+            "difficulty": difficulty,
+            "category": category,
+            "interaction_status": cr.status, # Sent, Opened, Clicked, Reported
+            "track_id": str(cr.track_id)
+        })
+        
+    # Sort feed by send_date descending
+    feed.sort(key=lambda x: x["send_date"], reverse=True)
+    return feed
+
+
+@router.post("/campaigns/employee/report-campaign/{campaign_id}")
+@router.post("/employee/report-campaign/{campaign_id}")
+def report_campaign_simulation(
+    campaign_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Report a phishing campaign email directly from the employee feed/inbox."""
+    emp = db.query(Employee).filter(Employee.id == current_user.id).first()
+    if not emp:
+        emp = db.query(Employee).filter(Employee.email == current_user.email).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee profile not found")
+
+    recipient = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.employee_id == emp.id
+    ).first()
+    
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Campaign record not found for employee")
+        
+    if recipient.status == "Reported":
+        return {"status": "success", "message": "Email has already been reported."}
+        
+    # Update interaction status
+    recipient.status = "Reported"
+    
+    camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    template = db.query(EmailTemplate).filter(EmailTemplate.id == camp.template_id).first() if camp else None
+    
+    email_subject = template.subject if template else (camp.name if camp else "Phishing Simulation")
+    email_sender = template.sender_name if (template and template.sender_name) else "simulation@phintra.com"
+    email_body = template.body_html if template else "This was a simulated phishing email."
+    
+    # Store in ReportedEmail table
+    from app.models.reported_email import ReportedEmail
+    
+    # Check if already in ReportedEmail
+    already_reported = db.query(ReportedEmail).filter(
+        ReportedEmail.employee_id == emp.id,
+        ReportedEmail.campaign_id == campaign_id
+    ).first()
+    
+    if not already_reported:
+        db_report = ReportedEmail(
+            employee_id=emp.id,
+            employee_name=f"{emp.first_name} {emp.last_name}".strip() or "Employee",
+            employee_email=emp.email,
+            campaign_id=campaign_id,
+            campaign_name=camp.name if camp else "Simulated Campaign",
+            email_subject=email_subject,
+            email_sender=email_sender,
+            email_body=email_body,
+            report_reason="Employee flagged the simulation email from inbox feed.",
+            report_status="reported", # Lifecycle: reported, reviewed, resolved
+            department_id=emp.department_id,
+            risk_score=50,
+            risk_level="Medium",
+            admin_id=emp.admin_id
+        )
+        db.add(db_report)
+        
+        # Update Risk Score
+        emp.risk_score = max(0.0, emp.risk_score - 10.0)
+        if emp.risk_score < 20.0:
+            emp.status = "Low Risk"
+        elif emp.risk_score < 50.0:
+            emp.status = "Medium Risk"
+        elif emp.risk_score < 80.0:
+            emp.status = "High Risk"
+        else:
+            emp.status = "Critical Risk"
+            
+        # Award 100 XP
+        from app.models.certificate import Reward
+        reward = Reward(
+            employee_id=emp.id,
+            xp_amount=100,
+            description=f"Successfully reported phishing simulation: {camp.name if camp else 'Simulation'}"
+        )
+        db.add(reward)
+        
+        # Notify Admin
+        from app.models.notification import Notification
+        notif = Notification(
+            user_id=None,
+            employee_id=emp.id,
+            title="Simulated phishing email reported",
+            message=f"{emp.first_name} {emp.last_name} successfully reported a simulated phishing email.",
+            is_read=False
+        )
+        db.add(notif)
+        
+        # Audit Log
+        from app.models.audit_log import AuditLog
+        audit = AuditLog(
+            action="Report Campaign Simulation",
+            details=f"Employee {emp.email} reported campaign simulation {camp.name if camp else campaign_id}."
+        )
+        db.add(audit)
+        
+        db.commit()
+        
+    return {"status": "success", "message": "Email simulation successfully reported."}
 

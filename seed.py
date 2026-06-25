@@ -15,6 +15,7 @@ def seed_data():
     try:
         # 1. Base table schema checks
         Base.metadata.create_all(bind=engine)
+        import app.main
         print("Ensured database tables exist.")
 
         # 2. Seed Users
@@ -241,25 +242,41 @@ def seed_data():
                 "title": "Password Reset Alert",
                 "subject": "Urgent: Your Password Expires in 24 Hours",
                 "category": "Phishing",
-                "body_html": "<h3>Account Action Required</h3><p>Dear {{employee_name}},</p><p>Your password for {{company_name}} is set to expire in 24 hours. Please click the link below to verify your current password and reset it:</p><p><a href='{{login_link}}'>Reset Password Now</a></p><p>Best regards,<br>IT Security Team</p>"
+                "difficulty": "Easy",
+                "sender_name": "IT Security Desk",
+                "sender_email": "security-alert@phintra-auth.com",
+                "body_html": "<h3>Account Action Required</h3><p>Dear {{EmployeeName}},</p><p>Your password for {{Company}} is set to expire in 24 hours. Please click the link below to verify your current password and reset it:</p><p><a href='{{TrackingLink}}'>Reset Password Now</a></p><p>Best regards,<br>IT Security Team</p>",
+                "body_text": "Account Action Required\n\nDear {{EmployeeName}},\n\nYour password for {{Company}} is set to expire in 24 hours. Please copy and paste the link below to verify your current password and reset it:\n\n{{TrackingLink}}\n\nBest regards,\nIT Security Team"
             },
             {
                 "title": "HR Policy Update",
                 "subject": "Important: Updated Employee Policy - Action Required",
                 "category": "Phishing",
-                "body_html": "<h3>HR Policy Guidelines Update</h3><p>Dear {{employee_name}},</p><p>We have updated our internal corporate employee guidelines policy. Please review and sign the document at your earliest convenience to acknowledge compliance:</p><p><a href='{{login_link}}'>Access Policy Document</a></p><p>Best regards,<br>Human Resources Department</p>"
+                "difficulty": "Medium",
+                "sender_name": "Human Resources",
+                "sender_email": "hr-updates@company-alert.com",
+                "body_html": "<h3>HR Policy Guidelines Update</h3><p>Dear {{EmployeeName}},</p><p>We have updated our internal corporate employee guidelines policy. Please review and sign the document at your earliest convenience to acknowledge compliance:</p><p><a href='{{TrackingLink}}'>Access Policy Document</a></p><p>Best regards,<br>Human Resources Department</p>",
+                "body_text": "HR Policy Guidelines Update\n\nDear {{EmployeeName}},\n\nWe have updated our internal corporate employee guidelines policy. Please review and sign the document at your earliest convenience to acknowledge compliance:\n\n{{TrackingLink}}\n\nBest regards,\nHuman Resources Department"
             },
             {
                 "title": "Security Awareness Reminder",
                 "subject": "Mandatory: Complete Your Annual Security Training",
                 "category": "Awareness",
-                "body_html": "<h3>Mandatory Training Notice</h3><p>Dear {{employee_name}},</p><p>This is a reminder that you have pending training assignments. Please log in to complete your annual cyber security modules:</p><p><a href='{{login_link}}'>Access Training Portal</a></p><p>Best regards,<br>Security Compliance</p>"
+                "difficulty": "Easy",
+                "sender_name": "Security Compliance",
+                "sender_email": "compliance@company-alert.com",
+                "body_html": "<h3>Mandatory Training Notice</h3><p>Dear {{EmployeeName}},</p><p>This is a reminder that you have pending training assignments. Please log in to complete your annual cyber security modules:</p><p><a href='{{TrackingLink}}'>Access Training Portal</a></p><p>Best regards,<br>Security Compliance</p>",
+                "body_text": "Mandatory Training Notice\n\nDear {{EmployeeName}},\n\nThis is a reminder that you have pending training assignments. Please log in to complete your annual cyber security modules:\n\n{{TrackingLink}}\n\nBest regards,\nSecurity Compliance"
             },
             {
                 "title": "Account Verification",
                 "subject": "Action Required: Verify Your Corporate Account",
                 "category": "Phishing",
-                "body_html": "<h3>Corporate Account Verification</h3><p>Dear {{employee_name}},</p><p>We detected unusual activity on your account. To maintain your corporate access, please verify your profile using the link below:</p><p><a href='{{login_link}}'>Verify Account Profile</a></p><p>Best regards,<br>SecOps Center</p>"
+                "difficulty": "Hard",
+                "sender_name": "SecOps Center",
+                "sender_email": "secops@phintra-auth.com",
+                "body_html": "<h3>Corporate Account Verification</h3><p>Dear {{EmployeeName}},</p><p>We detected unusual activity on your account. To maintain your corporate access, please verify your profile using the link below:</p><p><a href='{{TrackingLink}}'>Verify Account Profile</a></p><p>Best regards,<br>SecOps Center</p>",
+                "body_text": "Corporate Account Verification\n\nDear {{EmployeeName}},\n\nWe detected unusual activity on your account. To maintain your corporate access, please verify your profile using the link below:\n\n{{TrackingLink}}\n\nBest regards,\nSecOps Center"
             }
         ]
         for t_data in templates_to_seed:
@@ -269,7 +286,11 @@ def seed_data():
                     title=t_data["title"],
                     subject=t_data["subject"],
                     category=t_data["category"],
-                    body_html=t_data["body_html"]
+                    difficulty=t_data.get("difficulty", "Medium"),
+                    sender_name=t_data.get("sender_name", "System Notification"),
+                    sender_email=t_data.get("sender_email"),
+                    body_html=t_data["body_html"],
+                    body_text=t_data["body_text"]
                 )
                 db.add(template)
                 db.commit()

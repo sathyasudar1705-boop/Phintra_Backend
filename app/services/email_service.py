@@ -78,9 +78,21 @@ def send_email(*args, **kwargs) -> bool:
     safe_disclaimer = "\n\n---\nDisclaimer: This is an educational notification or authorized security training communication from the Phintra Platform. Never share passwords or click links from unknown sources."
     full_body = body + safe_disclaimer
 
+    # Determine the display From header — may be overridden by a sender profile
+    sender_profile_id = kwargs.get("sender_profile_id")
+    display_from = SMTP_FROM_EMAIL
+    if sender_profile_id:
+        try:
+            from app.models.sender_profile import SenderProfile
+            sp = db.query(SenderProfile).filter(SenderProfile.profile_id == sender_profile_id).first()
+            if sp:
+                display_from = f"{sp.display_name} <{sp.email_address}>"
+        except Exception:
+            pass  # Fallback to real SMTP from
+
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = SMTP_FROM_EMAIL
+    msg["From"] = display_from
     msg["To"] = recipient_email
     
     # If the body is HTML, we should add an alternative text/html representation
